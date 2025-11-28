@@ -1,7 +1,7 @@
 use std::array;
 use std::sync::Mutex;
 
-use nalgebra::{Matrix2, Point2, Point3};
+use nalgebra::{Point2, Point3, Vector2};
 use rayon::prelude::*;
 
 use super::framebuffer::Framebuffer;
@@ -76,23 +76,30 @@ pub fn gen_scissor(uv: &[Point2<f32>], max_width: usize, max_height: usize) -> S
     }
 }
 
+fn rotate_cw(v: &Vector2<f32>) -> Vector2<f32> {
+    Vector2::new(-v.y, v.x)
+}
+
+fn rotate_ccw(v: &Vector2<f32>) -> Vector2<f32> {
+    Vector2::new(v.y, -v.x)
+}
+
 fn signed_triangle_area(points: [&Point2<f32>; 3], winding: WindingOrder) -> f32 {
     let a = points[0];
     let b = points[1];
     let c = points[2];
 
-    let mat = match winding {
-        // rotate counterclockwise 90 deg
-        WindingOrder::CounterClockwise => Matrix2::new(0.0, 1.0, -1.0, 0.0),
-
-        // rotate clockwise 90 deg
-        WindingOrder::Clockwise => Matrix2::new(0.0, -1.0, 1.0, 0.0),
-    };
-
     let ab = b - a;
     let ac = c - a;
 
-    let normal = mat * ab;
+    let normal = match winding {
+        // rotate counterclockwise 90 deg
+        WindingOrder::CounterClockwise => rotate_ccw(&ab),
+
+        // rotate clockwise 90 deg
+        WindingOrder::Clockwise => rotate_cw(&ab),
+    };
+
     ac.dot(&normal) / 2.0
 }
 
@@ -103,25 +110,24 @@ struct FragmentInfo {
     weights: [f32; VERTICES_PER_FACE],
 }
 
-fn process_fragment_geometry(
+fn process_fragment_geometry<T: Shader>(
     triangle: &[Point3<f32>; VERTICES_PER_FACE],
     point: &Point2<f32>,
-    winding: WindingOrder,
-    cull_back: bool,
+    pipeline: &Pipeline<T>,
 ) -> Option<FragmentInfo> {
     let screen_points = triangle.each_ref().map(|p| p.xy());
     let areas = array::from_fn::<_, VERTICES_PER_FACE, _>(|i| {
         let a = &screen_points[(i + 1) % VERTICES_PER_FACE];
         let b = &screen_points[(i + 2) % VERTICES_PER_FACE];
 
-        signed_triangle_area([a, b, point], winding)
+        signed_triangle_area([a, b, point], pipeline.winding_order)
     });
 
     // im not gonna bother trying to make this more idiomatic
     let areas_valid = areas.each_ref().map(|area| *area >= 0.0);
     let mut should_keep = areas_valid.iter().all(|valid| *valid);
 
-    if !cull_back {
+    if !pipeline.cull_back {
         // if we dont cull, also keep back
         should_keep |= areas_valid.iter().all(|valid| !*valid);
     }
@@ -140,45 +146,45 @@ fn process_fragment_geometry(
     }
 }
 
+struct FaceContext<'a, 'b, T: Shader> {
+    instance_id: usize,
+    call: &'a IndexedRenderCall<'b, T>,
+    vertex_output: [VertexOutput<T::Working>; VERTICES_PER_FACE],
+
+    fb_width: usize,
+    fb_height: usize,
+}
+
 impl Rasterizer {
-    fn render_pixel<T: Shader>(
-        &self,
-        x: usize,
-        y: usize,
-        instance_id: usize,
-        call: &IndexedRenderCall<T>,
-        vertex_output: &[VertexOutput<T::Working>; VERTICES_PER_FACE],
-        fb_width: usize,
-        fb_height: usize,
-    ) {
+    fn render_pixel<T: Shader>(&self, x: usize, y: usize, context: &FaceContext<T>) {
         let point = Point2::new(
-            (((x as f32 + 0.5) / fb_width as f32) * 2.0) - 1.0,
-            (((y as f32 + 0.5) / fb_height as f32) * 2.0) - 1.0,
+            (((x as f32 + 0.5) / context.fb_width as f32) * 2.0) - 1.0,
+            (((y as f32 + 0.5) / context.fb_height as f32) * 2.0) - 1.0,
         );
 
-        let vertex_positions = vertex_output.each_ref().map(|data| data.position);
-        let frag_info = process_fragment_geometry(
-            &vertex_positions,
-            &point,
-            call.pipeline.winding_order,
-            call.pipeline.cull_back,
-        );
+        let vertex_positions = context.vertex_output.each_ref().map(|data| data.position);
+        let frag_info =
+            process_fragment_geometry(&vertex_positions, &point, &context.call.pipeline);
 
         if let Some(frag) = frag_info {
-            let color = call.pipeline.shader.fragment_stage(&FragmentContext {
-                instance_id,
-                position: Point3::new(point.x, point.y, frag.depth),
-                data: &call.data,
-                working: T::Working::blend(
-                    &Vec::from_iter((0..VERTICES_PER_FACE).map(|i| ProcessedVertexOutput {
-                        data: &vertex_output[i].data,
-                        weight: frag.weights[i],
-                    })),
-                    frag.depth,
-                ),
-            });
+            let color = context
+                .call
+                .pipeline
+                .shader
+                .fragment_stage(&FragmentContext {
+                    instance_id: context.instance_id,
+                    position: Point3::new(point.x, point.y, frag.depth),
+                    data: &context.call.data,
+                    working: T::Working::blend(
+                        &Vec::from_iter((0..VERTICES_PER_FACE).map(|i| ProcessedVertexOutput {
+                            data: &context.vertex_output[i].data,
+                            weight: frag.weights[i],
+                        })),
+                        frag.depth,
+                    ),
+                });
 
-            let mut fb = call.framebuffer.lock().unwrap();
+            let mut fb = context.call.framebuffer.lock().unwrap();
             let num_attachments = fb.color_attachments().len();
 
             for i in 0..num_attachments {
@@ -194,21 +200,30 @@ impl Rasterizer {
         call: &IndexedRenderCall<T>,
     ) {
         let index_offset = face_index * VERTICES_PER_FACE;
-        let vertex_output = array::from_fn(|i| {
-            let index = call.indices[index_offset + i];
+        let (fb_width, fb_height) = call.framebuffer.lock().unwrap().size();
 
-            call.pipeline.shader.vertex_stage(&VertexContext {
-                vertex_id: index as usize,
-                instance_id: instance_id,
-                data: call.data,
-            })
-        });
+        let fc = FaceContext {
+            vertex_output: array::from_fn(|i| {
+                let index = call.indices[index_offset + i];
 
-        let uv = vertex_output
+                call.pipeline.shader.vertex_stage(&VertexContext {
+                    vertex_id: index as usize,
+                    instance_id: instance_id,
+                    data: call.data,
+                })
+            }),
+
+            instance_id,
+            fb_width,
+            fb_height,
+            call,
+        };
+
+        let uv = fc
+            .vertex_output
             .each_ref()
             .map(|output| output.position.xy().map(|x| (x + 1.0) / 2.0));
 
-        let (fb_width, fb_height) = call.framebuffer.lock().unwrap().size();
         let generated_scissor = gen_scissor(&uv, fb_width, fb_height);
 
         let final_scissor = match &call.scissor {
@@ -218,7 +233,7 @@ impl Rasterizer {
 
         if let Some(scissor) = final_scissor {
             scissor.coordinates().par_bridge().for_each(|(x, y)| {
-                self.render_pixel(x, y, instance_id, call, &vertex_output, fb_width, fb_height);
+                self.render_pixel(x, y, &fc);
             });
         }
     }

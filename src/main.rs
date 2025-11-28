@@ -3,13 +3,18 @@ pub mod graphics;
 
 use std::sync::Mutex;
 
-use nalgebra::Point3;
+use nalgebra::{Matrix4, Point3, Vector3};
 
 use color::RGBA8;
 use graphics::*;
 
 struct Vertex {
     position: Point3<f32>,
+}
+
+struct Instance {
+    model: Matrix4<f32>,
+    color: u32,
 }
 
 struct TestShader {
@@ -28,6 +33,7 @@ impl ShaderWorkingData for DummyWorking {
 
 struct TestUniformData {
     vertices: Box<[Vertex]>,
+    instances: Box<[Instance]>,
 }
 
 impl Shader for TestShader {
@@ -35,14 +41,20 @@ impl Shader for TestShader {
     type Working = DummyWorking;
 
     fn vertex_stage(&self, context: &VertexContext<Self::Uniform>) -> VertexOutput<Self::Working> {
+        let position = context.data.vertices[context.vertex_id].position;
+        let instance = &context.data.instances[context.instance_id];
+
+        let homogenous = position.to_homogeneous();
+        let world_position = instance.model * homogenous;
+
         VertexOutput {
-            position: context.data.vertices[context.vertex_id].position,
+            position: Point3::from_homogeneous(world_position).unwrap(),
             data: DummyWorking {},
         }
     }
 
-    fn fragment_stage(&self, _context: &FragmentContext<Self::Uniform, Self::Working>) -> u32 {
-        0xFF0000FF
+    fn fragment_stage(&self, context: &FragmentContext<Self::Uniform, Self::Working>) -> u32 {
+        context.data.instances[context.instance_id].color
     }
 }
 
@@ -82,6 +94,8 @@ fn main() {
         depth: 1.0,
     });
 
+    println!("Cleared");
+
     rast.render_indexed(&IndexedRenderCall {
         pipeline: &Pipeline {
             depth: DepthTesting {
@@ -95,7 +109,7 @@ fn main() {
         framebuffer: Mutex::new(&mut fb),
         vertex_offset: 0,
         first_instance: 0,
-        instance_count: 1,
+        instance_count: 2,
         scissor: None,
         indices: &[0, 2, 1],
         data: &TestUniformData {
@@ -110,8 +124,21 @@ fn main() {
                     position: Point3::new(-0.5, 0.5, 0.0),
                 },
             ]),
+            instances: Box::new([
+                Instance {
+                    model: Matrix4::new_translation(&Vector3::new(0.25, 0.0, 0.25)),
+                    color: 0x00FF00FF,
+                },
+                Instance {
+                    model: Matrix4::new_translation(&Vector3::new(-0.25, 0.0, 0.5)),
+                    color: 0xFF0000FF,
+                },
+            ]),
         },
     });
 
+    println!("Rendered");
+
     dump_image(&fb.color_attachments()[0]);
+    println!("Dumped image");
 }
