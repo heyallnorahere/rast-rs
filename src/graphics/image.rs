@@ -48,6 +48,8 @@ impl<T: Sized> Image<T> {
     pub fn coordinates(&self) -> CoordinateIterator {
         CoordinateIterator {
             pixel_index: 0,
+            x: 0,
+            y: 0,
             width: self.width,
             height: self.height,
         }
@@ -56,14 +58,18 @@ impl<T: Sized> Image<T> {
 
 pub struct CoordinateIterator {
     pixel_index: usize,
+    x: usize,
+    y: usize,
     width: usize,
     height: usize,
 }
 
 impl CoordinateIterator {
-    pub(crate) fn new(width: usize, height: usize) -> CoordinateIterator {
+    pub(crate) fn new(x: usize, y: usize, width: usize, height: usize) -> CoordinateIterator {
         CoordinateIterator {
             pixel_index: 0,
+            x,
+            y,
             width,
             height,
         }
@@ -79,8 +85,8 @@ impl Iterator for CoordinateIterator {
             return None;
         }
 
-        let x = self.pixel_index % self.width;
-        let y = self.pixel_index / self.width;
+        let x = self.x + self.pixel_index % self.width;
+        let y = self.y + self.pixel_index / self.width;
         self.pixel_index += 1;
 
         return Some((x, y));

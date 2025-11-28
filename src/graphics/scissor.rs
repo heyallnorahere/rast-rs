@@ -11,7 +11,7 @@ pub struct Scissor {
 
 impl Scissor {
     pub fn coordinates(&self) -> CoordinateIterator {
-        CoordinateIterator::new(self.width, self.height)
+        CoordinateIterator::new(self.x, self.y, self.width, self.height)
     }
 
     pub fn contains(&self, x: usize, y: usize) -> bool {
