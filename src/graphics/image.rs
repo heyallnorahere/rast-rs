@@ -41,6 +41,10 @@ impl<T: Sized> Image<T> {
         })
     }
 
+    pub(crate) fn data_mut<'a>(&'a mut self) -> &'a mut [T] {
+        &mut self.data
+    }
+
     pub fn size(&self) -> (usize, usize) {
         (self.width, self.height)
     }

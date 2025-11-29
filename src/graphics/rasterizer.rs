@@ -1,10 +1,9 @@
 use std::array;
-use std::sync::Mutex;
 
 use nalgebra::{Point2, Point3, Vector2};
 use rayon::prelude::*;
 
-use super::framebuffer::Framebuffer;
+use super::framebuffer::{Framebuffer, MutableScanline};
 use super::scissor::Scissor;
 use super::shader::{
     FragmentContext, ProcessedVertexOutput, Shader, ShaderWorkingData, VertexContext, VertexOutput,
@@ -38,7 +37,6 @@ pub struct Rasterizer {
 
 pub struct IndexedRenderCall<'a, T: Shader> {
     pub pipeline: &'a Pipeline<T>,
-    pub framebuffer: Mutex<&'a mut Framebuffer>,
 
     pub vertex_offset: usize,
     pub first_instance: usize,
@@ -146,20 +144,25 @@ fn process_fragment_geometry<T: Shader>(
     }
 }
 
-struct FaceContext<'a, 'b, T: Shader> {
+struct FaceContext<'a, T: Shader> {
     instance_id: usize,
-    call: &'a IndexedRenderCall<'b, T>,
-    vertex_output: [VertexOutput<T::Working>; VERTICES_PER_FACE],
+    call: &'a IndexedRenderCall<'a, T>,
+    vertex_output: &'a [VertexOutput<T::Working>; VERTICES_PER_FACE],
 
     fb_width: usize,
     fb_height: usize,
 }
 
 impl Rasterizer {
-    fn render_pixel<T: Shader>(&self, x: usize, y: usize, context: &FaceContext<T>) {
+    fn render_pixel<T: Shader>(
+        &self,
+        x: usize,
+        context: &FaceContext<T>,
+        scanline: &mut MutableScanline,
+    ) {
         let point = Point2::new(
             (((x as f32 + 0.5) / context.fb_width as f32) * 2.0) - 1.0,
-            (((y as f32 + 0.5) / context.fb_height as f32) * 2.0) - 1.0,
+            (((scanline.y as f32 + 0.5) / context.fb_height as f32) * 2.0) - 1.0,
         );
 
         let vertex_positions = context.vertex_output.each_ref().map(|data| data.position);
@@ -184,11 +187,8 @@ impl Rasterizer {
                     ),
                 });
 
-            let mut fb = context.call.framebuffer.lock().unwrap();
-            let num_attachments = fb.color_attachments().len();
-
-            for i in 0..num_attachments {
-                fb.set_color(i, x, y, color);
+            for row in &mut scanline.color {
+                row[x] = color;
             }
         }
     }
@@ -198,54 +198,63 @@ impl Rasterizer {
         instance_id: usize,
         face_index: usize,
         call: &IndexedRenderCall<T>,
+        framebuffer: &mut Framebuffer,
     ) {
         let index_offset = face_index * VERTICES_PER_FACE;
-        let (fb_width, fb_height) = call.framebuffer.lock().unwrap().size();
+        let (fb_width, fb_height) = framebuffer.size();
 
-        let fc = FaceContext {
-            vertex_output: array::from_fn(|i| {
-                let index = call.indices[index_offset + i];
+        let vertex_output = array::from_fn(|i| {
+            let index = call.indices[index_offset + i];
 
-                call.pipeline.shader.vertex_stage(&VertexContext {
-                    vertex_id: index as usize,
-                    instance_id: instance_id,
-                    data: call.data,
-                })
-            }),
+            call.pipeline.shader.vertex_stage(&VertexContext {
+                vertex_id: index as usize,
+                instance_id: instance_id,
+                data: call.data,
+            })
+        });
 
-            instance_id,
-            fb_width,
-            fb_height,
-            call,
-        };
-
-        let uv = fc
-            .vertex_output
+        let uv = vertex_output
             .each_ref()
             .map(|output| output.position.xy().map(|x| (x + 1.0) / 2.0));
 
         let generated_scissor = gen_scissor(&uv, fb_width, fb_height);
-
         let final_scissor = match &call.scissor {
             Some(user_scissor) => generated_scissor.intersect_with(user_scissor),
             None => Some(generated_scissor), // move
         };
 
+        let fc = FaceContext {
+            instance_id,
+            call,
+            vertex_output: &vertex_output,
+            fb_width,
+            fb_height,
+        };
+
         if let Some(scissor) = final_scissor {
-            scissor.coordinates().par_bridge().for_each(|(x, y)| {
-                self.render_pixel(x, y, &fc);
-            });
+            framebuffer
+                .scanlines(scissor.y, scissor.height)
+                .par_iter_mut()
+                .for_each(|scanline| {
+                    for delta_x in 0..scissor.width {
+                        self.render_pixel(delta_x, &fc, scanline);
+                    }
+                });
         }
     }
 
-    pub fn render_indexed<T: Shader + Sync>(&self, call: &IndexedRenderCall<T>) {
+    pub fn render_indexed<T: Shader + Sync>(
+        &self,
+        call: &IndexedRenderCall<T>,
+        framebuffer: &mut Framebuffer,
+    ) {
         let face_count = call.indices.len() / VERTICES_PER_FACE;
 
         // todo: do we care about unused indices?
 
         for i in 0..call.instance_count {
             for j in 0..face_count {
-                self.render_face(call.first_instance + i, j, call);
+                self.render_face(call.first_instance + i, j, call, framebuffer);
             }
         }
     }

@@ -1,4 +1,4 @@
-use std::iter;
+use std::iter::{self, Iterator};
 
 use super::image::Image;
 
@@ -20,6 +20,12 @@ pub struct Framebuffer {
 pub struct ClearValue {
     pub color: u32,
     pub depth: f32,
+}
+
+pub struct MutableScanline<'a> {
+    pub y: usize,
+    pub color: Vec<&'a mut [u32]>,
+    pub depth: Option<&'a mut [f32]>,
 }
 
 impl Framebuffer {
@@ -58,7 +64,54 @@ impl Framebuffer {
         }
     }
 
-    pub fn set_color(&mut self, index: usize, x: usize, y: usize, color: u32) {
-        self.color[index].exchange(x, y, color);
+    pub fn scanlines<'a>(&'a mut self, offset: usize, count: usize) -> Vec<MutableScanline<'a>> {
+        let mut scanlines = Vec::new();
+
+        if offset >= self.height || offset + count > self.height {
+            panic!("Invalid scanline range!");
+        }
+
+        let start = offset * self.width;
+        let end = (offset + count) * self.width;
+
+        let mut cursors: Vec<_> = self
+            .color
+            .iter_mut()
+            .map(|attachment| &mut attachment.data_mut()[start..end])
+            .collect();
+
+        let mut depth_cursor = self
+            .depth
+            .as_mut()
+            .map(|attachment| &mut attachment.data_mut()[start..end]);
+
+        for delta_y in 0..count {
+            let mut color = Vec::new();
+            let mut new_cursors = Vec::new();
+
+            for cursor in cursors {
+                let (first, second) = cursor.split_at_mut(self.width);
+
+                color.push(first);
+                new_cursors.push(second);
+            }
+
+            cursors = new_cursors;
+            scanlines.push(MutableScanline {
+                y: offset + delta_y,
+                color,
+                depth: match depth_cursor {
+                    Some(cursor) => {
+                        let (first, second) = cursor.split_at_mut(self.width);
+                        depth_cursor = Some(second);
+
+                        Some(first)
+                    }
+                    None => None,
+                },
+            });
+        }
+
+        scanlines
     }
 }

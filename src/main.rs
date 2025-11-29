@@ -1,8 +1,6 @@
 pub mod color;
 pub mod graphics;
 
-use std::sync::Mutex;
-
 use nalgebra::{Matrix4, Point3, Vector3};
 
 use color::RGBA8;
@@ -96,46 +94,48 @@ fn main() {
 
     println!("Cleared");
 
-    rast.render_indexed(&IndexedRenderCall {
-        pipeline: &Pipeline {
-            depth: DepthTesting {
-                test: true,
-                write: true,
+    rast.render_indexed(
+        &IndexedRenderCall {
+            pipeline: &Pipeline {
+                depth: DepthTesting {
+                    test: true,
+                    write: true,
+                },
+                cull_back: true,
+                winding_order: WindingOrder::CounterClockwise,
+                shader: TestShader {},
             },
-            cull_back: true,
-            winding_order: WindingOrder::CounterClockwise,
-            shader: TestShader {},
+            vertex_offset: 0,
+            first_instance: 0,
+            instance_count: 2,
+            scissor: None,
+            indices: &[0, 2, 1],
+            data: &TestUniformData {
+                vertices: Box::new([
+                    Vertex {
+                        position: Point3::new(0.0, -0.5, 0.0),
+                    },
+                    Vertex {
+                        position: Point3::new(0.5, 0.5, 0.0),
+                    },
+                    Vertex {
+                        position: Point3::new(-0.5, 0.5, 0.0),
+                    },
+                ]),
+                instances: Box::new([
+                    Instance {
+                        model: Matrix4::new_translation(&Vector3::new(0.25, 0.0, 0.25)),
+                        color: 0x00FF00FF,
+                    },
+                    Instance {
+                        model: Matrix4::new_translation(&Vector3::new(-0.25, 0.0, 0.5)),
+                        color: 0xFF0000FF,
+                    },
+                ]),
+            },
         },
-        framebuffer: Mutex::new(&mut fb),
-        vertex_offset: 0,
-        first_instance: 0,
-        instance_count: 2,
-        scissor: None,
-        indices: &[0, 2, 1],
-        data: &TestUniformData {
-            vertices: Box::new([
-                Vertex {
-                    position: Point3::new(0.0, -0.5, 0.0),
-                },
-                Vertex {
-                    position: Point3::new(0.5, 0.5, 0.0),
-                },
-                Vertex {
-                    position: Point3::new(-0.5, 0.5, 0.0),
-                },
-            ]),
-            instances: Box::new([
-                Instance {
-                    model: Matrix4::new_translation(&Vector3::new(0.25, 0.0, 0.25)),
-                    color: 0x00FF00FF,
-                },
-                Instance {
-                    model: Matrix4::new_translation(&Vector3::new(-0.25, 0.0, 0.5)),
-                    color: 0xFF0000FF,
-                },
-            ]),
-        },
-    });
+        &mut fb,
+    );
 
     println!("Rendered");
 
