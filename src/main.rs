@@ -6,10 +6,6 @@ use graphics::*;
 
 struct Vertex {
     position: Point3<f32>,
-}
-
-struct Instance {
-    model: Matrix4<f32>,
     color: u32,
 }
 
@@ -17,40 +13,47 @@ struct TestShader {
     // nothing
 }
 
-struct DummyWorking {
-    // nothing
+struct TestWorking {
+    color: u32,
 }
 
-impl ShaderWorkingData for DummyWorking {
-    fn blend(_data: &[ProcessedVertexOutput<Self>], _scale: f32) -> Self {
-        DummyWorking {}
+impl Blendable for TestWorking {
+    fn blend(data: &[&Self], weights: &[f32], scale: f32) -> Self {
+        TestWorking {
+            color: u32::blend(
+                &data.iter().map(|w| &w.color).collect::<Vec<&u32>>(),
+                weights,
+                scale,
+            ),
+        }
     }
 }
 
 struct TestUniformData {
+    model: Matrix4<f32>,
     vertices: Box<[Vertex]>,
-    instances: Box<[Instance]>,
 }
 
 impl Shader for TestShader {
     type Uniform = TestUniformData;
-    type Working = DummyWorking;
+    type Working = TestWorking;
 
     fn vertex_stage(&self, context: &VertexContext<Self::Uniform>) -> VertexOutput<Self::Working> {
-        let position = context.data.vertices[context.vertex_id].position;
-        let instance = &context.data.instances[context.instance_id];
+        let vertex = &context.data.vertices[context.vertex_id];
 
-        let homogenous = position.to_homogeneous();
-        let world_position = instance.model * homogenous;
+        let homogenous = vertex.position.to_homogeneous();
+        let world_position = context.data.model * homogenous;
 
         VertexOutput {
             position: Point3::from_homogeneous(world_position).unwrap(),
-            data: DummyWorking {},
+            data: TestWorking {
+                color: vertex.color,
+            },
         }
     }
 
     fn fragment_stage(&self, context: &FragmentContext<Self::Uniform, Self::Working>) -> u32 {
-        context.data.instances[context.instance_id].color
+        context.working.color
     }
 }
 
@@ -59,10 +62,7 @@ fn dump_image(data: &Image<u32>) {
     let mut image = bmp::Image::new(width as u32, height as u32);
 
     for (x, y) in image.coordinates() {
-        let color = match data.at(x as usize, y as usize) {
-            Some(value) => value.to_be_bytes(),
-            None => [0, 0, 0, 0],
-        };
+        let color = data.at(x as usize, y as usize).unwrap_or(&0).to_be_bytes();
 
         image.set_pixel(
             x,
@@ -106,25 +106,19 @@ fn main() {
             scissor: None,
             indices: &[0, 2, 1],
             data: &TestUniformData {
+                model: Matrix4::new_translation(&Vector3::new(0.0, 0.0, 0.5)),
                 vertices: Box::new([
                     Vertex {
                         position: Point3::new(0.0, -0.5, 0.0),
+                        color: 0xFF0000FF,
                     },
                     Vertex {
                         position: Point3::new(0.5, 0.5, 0.0),
+                        color: 0x00FF00FF,
                     },
                     Vertex {
                         position: Point3::new(-0.5, 0.5, 0.0),
-                    },
-                ]),
-                instances: Box::new([
-                    Instance {
-                        model: Matrix4::new_translation(&Vector3::new(0.25, 0.0, 0.25)),
-                        color: 0x00FF00FF,
-                    },
-                    Instance {
-                        model: Matrix4::new_translation(&Vector3::new(-0.25, 0.0, 0.5)),
-                        color: 0xFF0000FF,
+                        color: 0x0000FFFF,
                     },
                 ]),
             },

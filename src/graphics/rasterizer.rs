@@ -3,12 +3,10 @@ use std::array;
 use nalgebra::{Point2, Point3, Vector2};
 use rayon::prelude::*;
 
+use super::blending::Blendable;
 use super::framebuffer::{Framebuffer, MutableScanline};
 use super::scissor::Scissor;
-use super::blending::Blendable;
-use super::shader::{
-    FragmentContext, Shader, VertexContext, VertexOutput,
-};
+use super::shader::{FragmentContext, Shader, VertexContext, VertexOutput};
 
 #[derive(Debug, Clone, Copy)]
 pub enum DepthMode {
@@ -153,16 +151,22 @@ fn process_fragment_geometry<T: Shader>(
         let flat_weights = areas.map(|area| area / area_sum);
 
         let inverse_depths = triangle.each_ref().map(|p| 1.0 / p.z);
+        let inverse_depth = flat_weights
+            .iter()
+            .zip(inverse_depths.iter())
+            .map(|(w, d)| w * d)
+            .sum::<f32>();
+
         Some(FragmentInfo {
-            depth: 1.0 / inverse_depths.iter().sum::<f32>(),
-            weights: array::from_fn(|i| flat_weights[i] * inverse_depths[i]),
+            depth: 1.0 / inverse_depth,
+            weights: array::from_fn(|i| flat_weights[i] * inverse_depths[i] / inverse_depth),
         })
     } else {
         None
     }
 }
 
-// returns false on failure
+// returns false if fragment should be discarded
 fn depth_test(x: usize, current_depth: f32, scanline: &MutableScanline) -> bool {
     if let Some(depth) = &scanline.depth {
         let closest_depth = depth[x];
@@ -183,7 +187,45 @@ struct FaceContext<'a, T: Shader> {
 }
 
 impl Rasterizer {
-    fn render_pixel<T: Shader>(
+    fn render_fragment<T: Shader>(
+        &self,
+        x: usize,
+        context: &FaceContext<T>,
+        scanline: &mut MutableScanline,
+        point: Point2<f32>,
+        frag: FragmentInfo,
+    ) {
+        if context.call.pipeline.depth.should_test() && !depth_test(x, frag.depth, scanline) {
+            return;
+        }
+
+        let color = context
+            .call
+            .pipeline
+            .shader
+            .fragment_stage(&FragmentContext {
+                instance_id: context.instance_id,
+                position: Point3::new(point.x, point.y, frag.depth),
+                data: &context.call.data,
+                working: T::Working::blend(
+                    &context.vertex_output.each_ref().map(|output| &output.data),
+                    &frag.weights,
+                    1.0,
+                ),
+            });
+
+        for row in &mut scanline.color {
+            row[x] = color;
+        }
+
+        if context.call.pipeline.depth.should_write()
+            && let Some(depth_row) = &mut scanline.depth
+        {
+            depth_row[x] = frag.depth;
+        }
+    }
+
+    fn process_pixel<T: Shader>(
         &self,
         x: usize,
         context: &FaceContext<T>,
@@ -195,38 +237,10 @@ impl Rasterizer {
         );
 
         let vertex_positions = context.vertex_output.each_ref().map(|data| data.position);
-        let frag_info =
-            process_fragment_geometry(&vertex_positions, &point, &context.call.pipeline);
-
-        if let Some(frag) = frag_info {
-            if context.call.pipeline.depth.should_test() && !depth_test(x, frag.depth, scanline) {
-                return;
-            }
-
-            let color = context
-                .call
-                .pipeline
-                .shader
-                .fragment_stage(&FragmentContext {
-                    instance_id: context.instance_id,
-                    position: Point3::new(point.x, point.y, frag.depth),
-                    data: &context.call.data,
-                    working: T::Working::blend(
-                        &context.vertex_output.each_ref().map(|output| &output.data),
-                        &frag.weights,
-                        frag.depth,
-                    ),
-                });
-
-            for row in &mut scanline.color {
-                row[x] = color;
-            }
-
-            if context.call.pipeline.depth.should_write()
-                && let Some(depth_row) = &mut scanline.depth
-            {
-                depth_row[x] = frag.depth;
-            }
+        if let Some(frag) =
+            process_fragment_geometry(&vertex_positions, &point, &context.call.pipeline)
+        {
+            self.render_fragment(x, context, scanline, point, frag);
         }
     }
 
@@ -272,7 +286,7 @@ impl Rasterizer {
                 .par_iter_mut()
                 .for_each(|scanline| {
                     for delta_x in 0..scissor.width {
-                        self.render_pixel(scissor.x + delta_x, &fc, scanline);
+                        self.process_pixel(scissor.x + delta_x, &fc, scanline);
                     }
                 });
         }
