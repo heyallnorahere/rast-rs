@@ -1,5 +1,7 @@
 use nalgebra::Point3;
 
+use super::blending::Blendable;
+
 pub struct VertexContext<'a, U> {
     pub vertex_id: usize,
     pub instance_id: usize,
@@ -24,13 +26,9 @@ pub struct ProcessedVertexOutput<'a, W: ?Sized> {
     pub weight: f32,
 }
 
-pub trait ShaderWorkingData {
-    fn blend(data: &[ProcessedVertexOutput<Self>], scale: f32) -> Self;
-}
-
 pub trait Shader {
     type Uniform: Sync;
-    type Working: ShaderWorkingData + Sync;
+    type Working: Blendable + Sync;
 
     fn vertex_stage(&self, context: &VertexContext<Self::Uniform>) -> VertexOutput<Self::Working>;
     fn fragment_stage(&self, context: &FragmentContext<Self::Uniform, Self::Working>) -> u32;

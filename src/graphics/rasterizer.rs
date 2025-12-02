@@ -5,8 +5,9 @@ use rayon::prelude::*;
 
 use super::framebuffer::{Framebuffer, MutableScanline};
 use super::scissor::Scissor;
+use super::blending::Blendable;
 use super::shader::{
-    FragmentContext, ProcessedVertexOutput, Shader, ShaderWorkingData, VertexContext, VertexOutput,
+    FragmentContext, Shader, VertexContext, VertexOutput,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -211,10 +212,8 @@ impl Rasterizer {
                     position: Point3::new(point.x, point.y, frag.depth),
                     data: &context.call.data,
                     working: T::Working::blend(
-                        &Vec::from_iter((0..VERTICES_PER_FACE).map(|i| ProcessedVertexOutput {
-                            data: &context.vertex_output[i].data,
-                            weight: frag.weights[i],
-                        })),
+                        &context.vertex_output.each_ref().map(|output| &output.data),
+                        &frag.weights,
                         frag.depth,
                     ),
                 });

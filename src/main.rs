@@ -1,9 +1,7 @@
-pub mod color;
 pub mod graphics;
 
 use nalgebra::{Matrix4, Point3, Vector3};
 
-use color::RGBA8;
 use graphics::*;
 
 struct Vertex {
@@ -62,17 +60,17 @@ fn dump_image(data: &Image<u32>) {
 
     for (x, y) in image.coordinates() {
         let color = match data.at(x as usize, y as usize) {
-            Some(value) => RGBA8::from(value.clone()),
-            None => RGBA8::default(),
+            Some(value) => value.to_be_bytes(),
+            None => [0, 0, 0, 0],
         };
 
         image.set_pixel(
             x,
             y,
             bmp::Pixel {
-                r: color.r,
-                g: color.g,
-                b: color.b,
+                r: color[0],
+                g: color[1],
+                b: color[2],
             },
         );
     }
