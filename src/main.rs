@@ -18,12 +18,11 @@ struct TestWorking {
 }
 
 impl Blendable for TestWorking {
-    fn blend(data: &[&Self], weights: &[f32], scale: f32) -> Self {
+    fn blend(data: &[&Self], weights: &[f32]) -> Self {
         TestWorking {
             color: u32::blend(
                 &data.iter().map(|w| &w.color).collect::<Vec<&u32>>(),
                 weights,
-                scale,
             ),
         }
     }
@@ -84,7 +83,6 @@ fn main() {
     };
 
     let mut fb = Framebuffer::new(1600, 900, 1, true);
-
     fb.clear(&ClearValue {
         color: 0x787878FF,
         depth: 1.0,
@@ -98,6 +96,7 @@ fn main() {
                 depth: DepthMode::Write,
                 cull_back: true,
                 winding_order: WindingOrder::CounterClockwise,
+                blending: None,
                 shader: TestShader {},
             },
             vertex_offset: 0,

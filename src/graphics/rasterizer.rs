@@ -9,6 +9,99 @@ use super::scissor::Scissor;
 use super::shader::{FragmentContext, Shader, VertexContext, VertexOutput};
 
 #[derive(Debug, Clone, Copy)]
+pub enum BlendFactor {
+    Zero,
+    One,
+    SrcAlpha,
+    OneMinusSrcAlpha,
+    DstAlpha,
+    OneMinusDstAlpha,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BlendOp {
+    Add,
+    SrcSubDst,
+    DstSubSrc,
+}
+
+#[derive(Debug)]
+pub struct ComponentBlendOp {
+    pub op: BlendOp,
+    pub src_factor: BlendFactor,
+    pub dst_factor: BlendFactor,
+}
+
+#[derive(Debug)]
+pub struct BlendAttachment {
+    pub color: Option<ComponentBlendOp>,
+    pub alpha: Option<ComponentBlendOp>,
+}
+
+fn color_to_channels(color: u32) -> [f32; 4] {
+    color.to_be_bytes().map(|c| (c as f32) / 256.0)
+}
+
+fn channels_to_color(channels: [f32; 4]) -> u32 {
+    u32::from_be_bytes(channels.map(|c| (c * 256.0) as u8))
+}
+
+struct BlendContext {
+    src_alpha: f32,
+    dst_alpha: f32,
+}
+
+impl ComponentBlendOp {
+    fn channel_term(value: f32, factor: &BlendFactor, context: &BlendContext) -> f32 {
+        let coeff = match factor {
+            BlendFactor::Zero => 0.0,
+            BlendFactor::One => 1.0,
+            BlendFactor::SrcAlpha => context.src_alpha,
+            BlendFactor::OneMinusSrcAlpha => 1.0 - context.src_alpha,
+            BlendFactor::DstAlpha => context.dst_alpha,
+            BlendFactor::OneMinusDstAlpha => 1.0 - context.dst_alpha,
+        };
+
+        coeff * value
+    }
+
+    fn blend(&self, src: f32, dst: f32, context: &BlendContext) -> f32 {
+        let src_term = Self::channel_term(src, &self.src_factor, context);
+        let dst_term = Self::channel_term(dst, &self.dst_factor, context);
+
+        match &self.op {
+            BlendOp::Add => src_term + dst_term,
+            BlendOp::SrcSubDst => src_term - dst_term,
+            BlendOp::DstSubSrc => dst_term - src_term,
+        }
+    }
+}
+
+impl BlendAttachment {
+    fn blend_colors(&self, src: u32, dst: u32) -> u32 {
+        let src_channels = color_to_channels(src);
+        let dst_channels = color_to_channels(dst);
+
+        let context = BlendContext {
+            src_alpha: src_channels[3],
+            dst_alpha: dst_channels[3],
+        };
+
+        channels_to_color(array::from_fn(|i| {
+            let component_op = match i {
+                3 => &self.alpha,
+                _ => &self.color,
+            };
+
+            match component_op {
+                Some(op) => op.blend(src_channels[i], dst_channels[i], &context),
+                None => src_channels[i],
+            }
+        }))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum DepthMode {
     DontCare,
     Test,
@@ -44,11 +137,13 @@ pub struct Pipeline<T: Shader> {
     pub cull_back: bool,
     pub winding_order: WindingOrder,
 
+    pub blending: Option<Vec<BlendAttachment>>,
+
     pub shader: T,
 }
 
 pub struct Rasterizer {
-    // todo: multithreading worker
+    // stats?
 }
 
 pub struct IndexedRenderCall<'a, T: Shader> {
@@ -210,12 +305,16 @@ impl Rasterizer {
                 working: T::Working::blend(
                     &context.vertex_output.each_ref().map(|output| &output.data),
                     &frag.weights,
-                    1.0,
                 ),
             });
 
-        for row in &mut scanline.color {
-            row[x] = color;
+        for i in 0..scanline.color.len() {
+            let row = &mut scanline.color[i];
+
+            row[x] = match &context.call.pipeline.blending {
+                Some(blending) => blending[i].blend_colors(color, row[x]),
+                None => color,
+            };
         }
 
         if context.call.pipeline.depth.should_write()
