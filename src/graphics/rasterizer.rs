@@ -281,6 +281,19 @@ struct FaceContext<'a, T: Shader> {
     fb_height: usize,
 }
 
+fn should_discard_fragment(
+    x: usize,
+    depth_mode: &DepthMode,
+    current_depth: f32,
+    scanline: &MutableScanline,
+) -> bool {
+    if current_depth < 0.0 {
+        true
+    } else {
+        depth_mode.should_test() && !depth_test(x, current_depth, scanline)
+    }
+}
+
 impl Rasterizer {
     fn render_fragment<T: Shader>(
         &self,
@@ -290,10 +303,6 @@ impl Rasterizer {
         point: Point2<f32>,
         frag: FragmentInfo,
     ) {
-        if context.call.pipeline.depth.should_test() && !depth_test(x, frag.depth, scanline) {
-            return;
-        }
-
         let color = context
             .call
             .pipeline
@@ -339,6 +348,10 @@ impl Rasterizer {
         if let Some(frag) =
             process_fragment_geometry(&vertex_positions, &point, &context.call.pipeline)
         {
+            if should_discard_fragment(x, &context.call.pipeline.depth, frag.depth, scanline) {
+                return;
+            }
+
             self.render_fragment(x, context, scanline, point, frag);
         }
     }
