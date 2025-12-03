@@ -2,3 +2,4 @@ target/
 dump.bmp
 perf.data*
 flamegraph.svg
+Cargo.lock
