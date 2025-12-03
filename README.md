@@ -1,3 +1,4 @@
 # rast-rs
 
-Rust rewrite of [rast](https://github.com/heyallnorahere/rast)
+Software rasterizer in Rust. Uses a right-handed coordinate system: +X right, +Y down, +Z in. See
+`examples/` for usage.
