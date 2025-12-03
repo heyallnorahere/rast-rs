@@ -89,7 +89,7 @@ impl GraphicsContext {
             window: window.clone(),
             surface,
 
-            rast: Rasterizer {},
+            rast: Rasterizer::new(),
             framebuffer: Self::create_framebuffer(&window),
         })
     }
@@ -168,10 +168,13 @@ impl App {
         let cos_phi = phi.cos();
 
         let radial = Point3::new(cos_theta * cos_phi, sin_phi, sin_theta * cos_phi);
-        let camera_pos = radial * 5.0;
+        let camera_distance = 1.0;
 
-        let view =
-            Matrix4::look_at_rh(&camera_pos, &Point3::origin(), &Vector3::new(0.0, 1.0, 0.0));
+        let view = Matrix4::look_at_rh(
+            &(radial * camera_distance),
+            &Point3::origin(),
+            &Vector3::new(0.0, 1.0, 0.0),
+        );
 
         let projection = Matrix4::new_perspective(aspect, std::f32::consts::PI / 4.0, 0.1, 100.0);
         data.uniforms.view_projection = projection * view;
@@ -190,6 +193,7 @@ impl App {
     }
 
     fn render(graphics: &mut GraphicsContext, data: &AppData) -> Result<(), Box<dyn Error>> {
+        graphics.rast.reset();
         graphics.framebuffer.clear(&ClearValue {
             color: 0x787878FF,
             depth: 1.0,
@@ -286,7 +290,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         data: AppData {
             pipeline: Pipeline {
                 depth: DepthMode::Write,
-                cull_back: true,
+                cull_back: false,
                 winding_order: WindingOrder::Clockwise,
                 blending: None,
                 shader: AppShader {},

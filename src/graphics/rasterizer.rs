@@ -142,10 +142,6 @@ pub struct Pipeline<T: Shader> {
     pub shader: T,
 }
 
-pub struct Rasterizer {
-    // stats?
-}
-
 pub struct IndexedRenderCall<'a, T: Shader> {
     pub pipeline: &'a Pipeline<T>,
 
@@ -294,70 +290,89 @@ fn should_discard_fragment(
     }
 }
 
-impl Rasterizer {
-    fn render_fragment<T: Shader>(
-        &self,
-        x: usize,
-        context: &FaceContext<T>,
-        scanline: &mut MutableScanline,
-        point: Point2<f32>,
-        frag: FragmentInfo,
-    ) {
-        let color = context
-            .call
-            .pipeline
-            .shader
-            .fragment_stage(&FragmentContext {
-                instance_id: context.instance_id,
-                position: Point3::new(point.x, point.y, frag.depth),
-                data: &context.call.data,
-                working: T::Working::blend(
-                    &context.vertex_output.each_ref().map(|output| &output.data),
-                    &frag.weights,
-                ),
-            });
+fn render_fragment<T: Shader>(
+    x: usize,
+    context: &FaceContext<T>,
+    scanline: &mut MutableScanline,
+    point: Point2<f32>,
+    frag: FragmentInfo,
+) {
+    let color = context
+        .call
+        .pipeline
+        .shader
+        .fragment_stage(&FragmentContext {
+            instance_id: context.instance_id,
+            position: Point3::new(point.x, point.y, frag.depth),
+            data: &context.call.data,
+            working: T::Working::blend(
+                &context.vertex_output.each_ref().map(|output| &output.data),
+                &frag.weights,
+            ),
+        });
 
-        for i in 0..scanline.color.len() {
-            let row = &mut scanline.color[i];
+    for i in 0..scanline.color.len() {
+        let row = &mut scanline.color[i];
 
-            row[x] = match &context.call.pipeline.blending {
-                Some(blending) => blending[i].blend_colors(color, row[x]),
-                None => color,
-            };
+        row[x] = match &context.call.pipeline.blending {
+            Some(blending) => blending[i].blend_colors(color, row[x]),
+            None => color,
+        };
+    }
+
+    if context.call.pipeline.depth.should_write()
+        && let Some(depth_row) = &mut scanline.depth
+    {
+        depth_row[x] = frag.depth;
+    }
+}
+
+fn process_pixel<T: Shader>(x: usize, context: &FaceContext<T>, scanline: &mut MutableScanline) {
+    let point = Point2::new(
+        (((x as f32 + 0.5) / context.fb_width as f32) * 2.0) - 1.0,
+        (((scanline.y as f32 + 0.5) / context.fb_height as f32) * 2.0) - 1.0,
+    );
+
+    let vertex_positions = context.vertex_output.each_ref().map(|data| data.position);
+    if let Some(frag) = process_fragment_geometry(&vertex_positions, &point, &context.call.pipeline)
+    {
+        if should_discard_fragment(x, &context.call.pipeline.depth, frag.depth, scanline) {
+            return;
         }
 
-        if context.call.pipeline.depth.should_write()
-            && let Some(depth_row) = &mut scanline.depth
-        {
-            depth_row[x] = frag.depth;
+        render_fragment(x, context, scanline, point, frag);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RenderStats {
+    pub faces_processed: usize,
+    pub faces_rendered: usize,
+    pub instances: usize,
+    pub calls: usize,
+}
+
+pub struct Rasterizer {
+    stats: RenderStats,
+}
+
+impl Rasterizer {
+    pub fn new() -> Rasterizer {
+        Rasterizer {
+            stats: RenderStats::default(),
         }
     }
 
-    fn process_pixel<T: Shader>(
-        &self,
-        x: usize,
-        context: &FaceContext<T>,
-        scanline: &mut MutableScanline,
-    ) {
-        let point = Point2::new(
-            (((x as f32 + 0.5) / context.fb_width as f32) * 2.0) - 1.0,
-            (((scanline.y as f32 + 0.5) / context.fb_height as f32) * 2.0) - 1.0,
-        );
+    pub fn reset(&mut self) {
+        self.stats = RenderStats::default();
+    }
 
-        let vertex_positions = context.vertex_output.each_ref().map(|data| data.position);
-        if let Some(frag) =
-            process_fragment_geometry(&vertex_positions, &point, &context.call.pipeline)
-        {
-            if should_discard_fragment(x, &context.call.pipeline.depth, frag.depth, scanline) {
-                return;
-            }
-
-            self.render_fragment(x, context, scanline, point, frag);
-        }
+    pub fn stats<'a>(&'a self) -> &'a RenderStats {
+        &self.stats
     }
 
     fn render_face<T: Shader + Sync>(
-        &self,
+        &mut self,
         instance_id: usize,
         face_index: usize,
         call: &IndexedRenderCall<T>,
@@ -384,28 +399,30 @@ impl Rasterizer {
             None => Some(generated_scissor), // move
         };
 
-        let fc = FaceContext {
-            instance_id,
-            call,
-            vertex_output: &vertex_output,
-            fb_width,
-            fb_height,
-        };
-
         if let Some(scissor) = final_scissor {
+            let fc = FaceContext {
+                instance_id,
+                call,
+                vertex_output: &vertex_output,
+                fb_width,
+                fb_height,
+            };
+
             framebuffer
                 .scanlines(scissor.y, scissor.height)
                 .par_iter_mut()
                 .for_each(|scanline| {
                     for delta_x in 0..scissor.width {
-                        self.process_pixel(scissor.x + delta_x, &fc, scanline);
+                        process_pixel(scissor.x + delta_x, &fc, scanline);
                     }
                 });
+
+            self.stats.faces_rendered += 1;
         }
     }
 
     pub fn render_indexed<T: Shader + Sync>(
-        &self,
+        &mut self,
         call: &IndexedRenderCall<T>,
         framebuffer: &mut Framebuffer,
     ) {
@@ -416,7 +433,12 @@ impl Rasterizer {
         for i in 0..call.instance_count {
             for j in 0..face_count {
                 self.render_face(call.first_instance + i, j, call, framebuffer);
+                self.stats.faces_processed += 1;
             }
+
+            self.stats.instances += 1;
         }
+
+        self.stats.calls += 1;
     }
 }

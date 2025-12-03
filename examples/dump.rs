@@ -76,9 +76,7 @@ fn dump_image(data: &Image<u32>) {
 }
 
 fn main() {
-    let rast = Rasterizer {
-        // uh
-    };
+    let mut rast = Rasterizer::new();
 
     let mut fb = Framebuffer::new(1600, 900, 1, true);
     fb.clear(&ClearValue {
@@ -99,7 +97,7 @@ fn main() {
             },
             vertex_offset: 0,
             first_instance: 0,
-            instance_count: 2,
+            instance_count: 1,
             scissor: None,
             indices: &[0, 2, 1],
             data: &TestUniformData {
@@ -124,6 +122,12 @@ fn main() {
     );
 
     println!("Rendered");
+    
+    let stats = rast.stats();
+    println!("{} calls", stats.calls);
+    println!("{} instances", stats.instances);
+    println!("{} faces processed", stats.faces_processed);
+    println!("{} faces rendered", stats.faces_rendered);
 
     dump_image(&fb.color_attachments()[0]);
     println!("Dumped image");
